@@ -27,9 +27,9 @@ grid_resolution = 256
 delta_x = 2*math.pi/grid_resolution
 delta_t = 10e-5
 amount_pe = 4
-delay = 100
+delay = 1
 alpha = 1
-c = 1
+c = 0
 
 # Put the points on the border into a dictionary
 boundary_points_left = dict()
@@ -130,7 +130,7 @@ def plot_all(time):
     #plt.pause(0.001)
     plt.subplot(1, 2, 2)
     #plt.clf()
-    plt.axis([0, 2*math.pi, -10, 10])
+    plt.axis([0, 2*math.pi, -0.01, 0.01])
     plt.plot(t, difference, "c--", label="Difference (asynchronous)" )
     plt.plot(t, difference_sync, "b--", label="Difference (synchronous)")
     plt.legend(loc="upper right")
