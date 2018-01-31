@@ -46,10 +46,6 @@ def solve(process):
     # Extract information from variables
     lower_limit, upper_limit = limit
     time_steps, delta_x, delta_t, r_alpha = process_const
-    # Time steps at which we want to measure time passed
-    times = list(range(0, time_steps, int((time_steps/1000))))
-    times_index = 1
-    result.append([0, initial_cond])
     # Define the (for the pe) relevant grid with 2 ghost points
     prev_values = np.zeros((upper_limit-lower_limit+1,))
     new_values = np.zeros((upper_limit-lower_limit+1,))
@@ -75,10 +71,8 @@ def solve(process):
             index_right += 1
         new_values[-1] = fds((prev_values[-2], prev_values[-1], ghost_right[index_right]), (delta_x, delta_t))
         pipeline[3].send(new_values[-1])
-        if i == times[times_index]:
-            times_index = min(times_index+1, len(times)-1)
-            # Need to copy values here with np.array
-            result.append([(time()-tic), np.array(new_values)])
+        if i == time_steps-1:
+            result = (time()-tic, new_values)
         prev_values = new_values
     return result
 
@@ -87,65 +81,36 @@ def get_initial_cond(grid_resolution):
             wavenumber*2*math.pi*x/grid_resolution + phase_angle),
             list(range(grid_resolution))))
 
-def exact_solution(time):
+def exact_solution(time, resolution):
     temp = []
     t = delta_t*time
-    for i in range(grid_resolution):
+    for i in range(resolution):
         x = delta_x*i
         sol = math.exp(-alpha*(wavenumber**2)*t)*amplitude*math.sin(
                 wavenumber*x+phase_angle-c*t)
         temp.append(sol)
     return temp
 
-def plot_results(results, delay):
-    time_points = list(range(0, time_steps, int((time_steps/1000))))
-    grid = [0 for _ in range(len(time_points))]
-    time = [[] for _ in range(len(results[0]))]
-    for result in results:
-        for j, sub_time in enumerate(result):
-            time[j].append(sub_time[0])
-    for i in range(len(time_points)):
-        sub_grid = []
-        for j in range(amount_pe):
-            # Cache inefficient
-            sub_grid.append(results[j][i][-1])
-        grid[i] = np.array(sub_grid).reshape((grid_resolution,))
-    time = [np.mean(t) for t in time]
-    residual = [np.linalg.norm(exact_solution(i)-grid[j], 1) for j, i in enumerate(time_points)]
-    print(residual)
-    plt.loglog(time, residual, label="Delay " + str(delay))
+def plot_results(results):
+    for i, sub in enumerate(results):
+        time = []
+        grid = []
+        for j, point in enumerate(sub):
+            time.append(point[0])
+            residual = np.linalg.norm(
+                    exact_solution(int(1/(2*math.pi*all_delta_t[j])),
+                                   grid_resolution[j])-point[1], 2)
+            grid.append(residual)
+        plt.loglog(time, grid, colors[delays[i]], label=delay_to_label[delays[i]])
     #plt.plot(exact_solution(time_points[90])-grid[90], label=delay)
 
-r_alpha = 0.01
-grid_resolution = 128
-# Choose this so that delta_t/delta_x**2 = 0.1
-delta_x = 2*math.pi/grid_resolution
-delta_t = r_alpha*delta_x*delta_x
-amount_pe = 4
-wavenumber = 3
-amplitude = 1
-phase_angle = 2.5    
-alpha = 1
-c = 0
-time_steps = int(1/(2*math.pi*delta_t))
-# Length of each processing element
-length_pe = grid_resolution//amount_pe
-
-if __name__ == '__main__':
-    plt.clf()
-    # Get initial conditions
-    initial_cond = get_initial_cond(grid_resolution)
-    # Ranges of the processing elements
-    pe_ranges = []
-    # Processing elements
-    pe = []
+def setup_pipeline(amount_pe, length_pe, initial_cond, resolution):
     # Using pipelines for communication, each process need 2 receiving
     # pipelines (ghost points) and 2 outgoing pipelines corresponding to
     # adjacent boundary points.
     # Structure: [Receiving information from the left point, where to write information
     # for the left point, Information from the right point, where to .. right point]
     pipeline = [[None, None, None, None] for _ in range(amount_pe)]
-    # TODO: Write testcase for veryfication
     for i in range(amount_pe):
          left_read, left_write = Pipe()
          right_read, right_write = Pipe()
@@ -157,11 +122,10 @@ if __name__ == '__main__':
          # Analogous to above, just modulo amount_pe to not get IndexError
          pipeline[(i+1)%amount_pe][0] = right_read
          pipeline[i][3] = right_write
-
     for i in range(amount_pe):
         if i == amount_pe-1:
             # If on the border of the domain, use rightmost point
-            boundary = grid_resolution-1
+            boundary = resolution-1
         else:
             # Otherwise use next point
             boundary = (i+1)*length_pe-1
@@ -170,31 +134,76 @@ if __name__ == '__main__':
         pipeline[i][1].send(initial_cond[i*length_pe])
         #print(pipeline[i-1][2].recv()==initial_cond[i*length_pe])
         pipeline[i][3].send(initial_cond[boundary])
-        # Save information on pe boundaries
+    return pipeline
+
+
+def setup_pe_ranges(amount_pe, resolution, length_pe):
+    pe_ranges = []
+    for i in range(amount_pe):
+        if i == amount_pe-1:
+            # If on the border of the domain, use rightmost point
+            boundary = resolution-1
+        else:
+            # Otherwise use next point
+            boundary = (i+1)*length_pe-1
         pe_ranges.append((i*length_pe, boundary))
-# =============================================================================
-#     tic = time()
-#     for i in range(amount_pe):
-#         # Define processes with initial conditions, range, pipelines and delays
-# 
-#         pe.append(Process(target=solve,
-#                           args=((initial_cond[pe_ranges[i][0]:pe_ranges[i][1]+1],
-#                                 pe_ranges[i], pipeline[i], 100000,
-#                                 [time_steps, delta_x, delta_t]))))
-#     [proc.start() for proc in pe]
-#     [proc.join(10) for proc in pe]
-#     print(time()-tic)
-# =============================================================================
+    return pe_ranges
+
+def combine_results(results, amount_pe, resolution):
+    grid = []
+    time = []
+    for result in results:
+        time.append(result[0])
+        grid.append(result[1])
+    grid = np.array(grid).reshape((resolution,))
+    time = np.mean(time)
+    return (time, grid)
+    
+colors = {0: "b.", 1: "g.", 10: "r.", 100: "k.", 1000: "m."}
+delay_to_label = {0: "Synchronous", 1: "Delay 1", 10: "Delay 10", 100: "Delay 100", 1000: "Delay 1000"}
+r_alpha = 0.1
+grid_resolution = [20, 40, 60, 80, 100]
+all_delta_x = [2*math.pi/r for r in grid_resolution]
+all_delta_t = [r_alpha*x*x for x in all_delta_x]
+delays = [0, 1]
+amount_pe = 4
+wavenumber = 3
+amplitude = 1
+phase_angle = 0.33   
+alpha = 1
+c = 0
+# Length of each processing element
+
+if __name__ == '__main__':
+    plt.clf()
+    # Ranges of the processing elements
+    pe_ranges = []
+    # Processing elements
+    pe = []
     tic = time()
     #x = np.linspace(0.1, 60, 1000)
     #y = x**2
     #plt.loglog(x, y, "--", label="quadratic")
-    for delay_time in [0, 1, 10, 100]:
-        with Pool(amount_pe) as pool:
-            params = [(initial_cond[pe_ranges[i][0]:pe_ranges[i][1]+1],
-                       pe_ranges[i], pipeline[i], 1,[time_steps, delta_x,
-                                delta_t, r_alpha]) for i in range(amount_pe)]
-            results = pool.map(solve, params, 1)
-        plot_results(results, delay=delay_time)
+    all_results = [[0 for _ in grid_resolution] for _ in delays]
+    for i, resolution in enumerate(grid_resolution):
+        length_pe = resolution//amount_pe
+        delta_x = 2*math.pi/resolution
+        delta_t = r_alpha*delta_x*delta_x
+        time_steps = int(1/(2*math.pi*delta_t))
+        # Get initial condition.
+        initial_cond = get_initial_cond(resolution)
+        pe_ranges = setup_pe_ranges(amount_pe, resolution, length_pe)
+        for j, delay_time in enumerate(delays):
+            pipeline = setup_pipeline(amount_pe, length_pe, initial_cond, resolution)
+            with Pool(amount_pe) as pool:
+                params = [(initial_cond[pe_ranges[i][0]:pe_ranges[i][1]+1],
+                           pe_ranges[i], pipeline[i], 1,[time_steps, delta_x,
+                                    delta_t, r_alpha]) for i in range(amount_pe)]
+                results = pool.map(solve, params, 1)
+            results = combine_results(results, amount_pe, resolution)
+            all_results[j][i] = results
+        print("Run", i, "Time:", time()-tic)
+    print(all_results)
+    plot_results(all_results)
     print(time()-tic)
     plt.legend(loc="upper right")
