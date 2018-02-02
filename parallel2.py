@@ -139,16 +139,10 @@ def plot_results(results):
     plt.clf()
     plt.xlabel('Run time')
     plt.ylabel('Error (INF)')
-    for i, sub in enumerate(results):
-        time = []
-        grid = []
-        for j, point in enumerate(sub):
-            time.append(point[0])
-            residual = np.linalg.norm(
-                    exact_solution_end(grid_resolution[j])-point[1], np.inf)
-            grid.append(residual)
-        print(time, grid)
-        plt.loglog(time, grid, colors[delays[i]], label=delay_to_label[delays[i]])
+    grid_results, time_results = results
+    for i in range(len(delays)):
+        plt.loglog(time_results[i, :], grid_results[i, :],
+                   colors[delays[i]], label=delay_to_label[delays[i]])
 
 def setup_pipeline(amount_pe, length_pe, initial_cond, resolution):
     # Using pipelines for communication, each process need 2 receiving
@@ -205,15 +199,17 @@ def combine_results(results, amount_pe, resolution):
         time.append(result[0])
         grid.append(result[1])
     grid = np.array(grid).reshape((resolution,))
+    residual = np.linalg.norm(
+                    exact_solution_end(resolution)-grid, np.inf)
     time = np.mean(time)
-    return (time, grid)
+    return (time, residual)
     
 
 end_time = (2*math.pi)**2/64
-colors = {0: "b-", 1: "g-", 10: "r-", 100: "k-", 1000: "m-"}
-delay_to_label = {0: "Synchronous", 1: "Delay 1", 10: "Delay 10", 100: "Delay 100", 1000: "Delay 1000"}
+colors = {0: "b-", 1: "g-", 10: "r-", 100: "k-", 1000: "m-", 25000: "c-"}
+delay_to_label = {0: "Synchronous", 1: "Delay 1", 10: "Delay 10", 100: "Delay 100", 1000: "Delay 1000", 25000: "Max. Delay"}
 r_alpha = 0.1
-grid_resolution = [20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 220, 240, 260, 280, 300, 320, 340, 360, 380, 400]
+grid_resolution = [32, 64, 128, 256, 512, 1024]
 all_delta_x = [2*math.pi/r for r in grid_resolution]
 all_delta_t = [r_alpha*x*x for x in all_delta_x]
 all_time_steps = [math.ceil(end_time/delta_t) for delta_t in all_delta_t]
@@ -221,7 +217,7 @@ delays = [0, 1, 1000, 25000]
 amount_pe = 4
 wavenumber = 1
 amplitude = 1
-phase_angle = 0.33   
+phase_angle = 0.33
 alpha = 1
 c = 0
 
@@ -237,26 +233,31 @@ if __name__ == '__main__':
     #x = np.linspace(0.1, 60, 1000)
     #y = x**2
     #plt.loglog(x, y, "--", label="quadratic")
-    all_results = [[0 for _ in grid_resolution] for _ in delays]
-    for i, resolution in enumerate(grid_resolution):
-        length_pe = resolution//amount_pe
-        delta_x = all_delta_x[i]
-        delta_t = all_delta_t[i]
-        time_steps = all_time_steps[i]
-        # Get initial condition.
-        initial_cond = get_initial_cond(resolution)
-        pe_ranges = setup_pe_ranges(amount_pe, resolution, length_pe)
-        for j, delay_time in enumerate(delays):
-            pipeline = setup_pipeline(amount_pe, length_pe, initial_cond, resolution)
-            with Pool(amount_pe) as pool:
-                params = [(initial_cond[pe_ranges[i][0]:pe_ranges[i][1]+1],
-                           pipeline[i], delay_time,[time_steps, delta_x,
-                                    delta_t, r_alpha]) for i in range(amount_pe)]
-                results = pool.map(solve, params, 1)
-            results = combine_results(results, amount_pe, resolution)
-            all_results[j][i] = results
-        print("Run", i, "Time:", time()-tic)
-    print(all_results)
-    plot_results(all_results)
+    grid_results = np.zeros((len(delays), len(grid_resolution)))
+    time_results = np.zeros((len(delays), len(grid_resolution)))
+    average = 1
+    for _ in range(average):
+        for i, resolution in enumerate(grid_resolution):
+            length_pe = resolution//amount_pe
+            delta_x = all_delta_x[i]
+            delta_t = all_delta_t[i]
+            time_steps = all_time_steps[i]
+            # Get initial condition.
+            initial_cond = get_initial_cond(resolution)
+            pe_ranges = setup_pe_ranges(amount_pe, resolution, length_pe)
+            for j, delay_time in enumerate(delays):
+                pipeline = setup_pipeline(amount_pe, length_pe, initial_cond, resolution)
+                with Pool(amount_pe) as pool:
+                    params = [(initial_cond[pe_ranges[i][0]:pe_ranges[i][1]+1],
+                               pipeline[i], delay_time,[time_steps, delta_x,
+                                        delta_t, r_alpha]) for i in range(amount_pe)]
+                    results = pool.map(solve, params, 1)
+                results = combine_results(results, amount_pe, resolution)
+                grid_results[j, i] += results[-1]
+                time_results[j, i] += results[0]
+            print("Run", i, "Time:", time()-tic)
+    grid_results = grid_results/average
+    time_results = time_results/average
+    plot_results((grid_results, time_results))
     print(time()-tic)
     plt.legend(loc="upper right")
